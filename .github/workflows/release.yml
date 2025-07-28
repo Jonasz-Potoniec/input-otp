@@ -1,0 +1,119 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch all history for all branches
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build input-otp package
+        run: |
+          cd packages/input-otp
+          pnpm build
+
+      - name: Verify build output
+        run: |
+          if [ ! -d "packages/input-otp/dist" ]; then
+            echo "Error: Build failed - dist directory not found"
+            exit 1
+          fi
+          echo "Build successful - dist directory exists"
+
+      - name: Create/Update release branch
+        run: |
+          # Delete remote release branch if it exists
+          git push origin --delete release 2>/dev/null || echo "No existing release branch to delete"
+
+          # Move to the input-otp directory and make it the new git root
+          cd packages/input-otp
+
+          echo "Package directory structure:"
+          ls -la
+
+          # Remove the parent .git directory and initialize fresh git repo
+          rm -rf ../../.git
+          git init
+
+          # Configure git for this repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Add the same remote origin with authentication
+          git remote add origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+
+          # Create release branch
+          git checkout -b release
+
+          # Remove node_modules if it exists
+          rm -rf node_modules
+
+          # Stage all changes, force-add dist folder to override .gitignore
+          git add .
+          git add -f dist/
+
+          # Commit and force push to create clean release branch
+          git commit -m "Release build from commit ${{ github.sha }}"
+          git push --force origin release
+
+      - name: Get package version
+        id: package_version
+        run: |
+          cd packages/input-otp
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.package_version.outputs.version }}-${{ github.run_number }}
+          name: Release v${{ steps.package_version.outputs.version }}
+          body: |
+            Automated release from commit ${{ github.sha }}
+
+            This release contains the built input-otp package v${{ steps.package_version.outputs.version }}.
+
+            **Changes:**
+            - Built from main branch commit: ${{ github.sha }}
+            - Package version: ${{ steps.package_version.outputs.version }}
+
+            **Installation:**
+            ```bash
+            pnpm add github:Jonasz-Potoniec/input-otp#release
+            ```
+
+            Or with a specific commit:
+            ```bash
+            pnpm add github:Jonasz-Potoniec/input-otp#${{ github.sha }}
+            ```
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
